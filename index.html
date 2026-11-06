@@ -39,7 +39,10 @@
     <button onclick="exchangeCodeForToken()">2. トークンに変換</button>
 
     <div class="status">
-      取得したIDトークン (JWT): <code id="jwtDisplay">未取得</code>
+      <p><strong>取得したIDトークン (JWT全文):</strong></p>
+      <textarea id="jwtDisplay" rows="4" style="width: 100%; font-family: monospace; font-size: 12px;" readonly placeholder="未取得"></textarea>
+      <p><strong>トークンの中身 (デコードされたPayload):</strong></p>
+      <pre id="jwtPayload" style="background: #222; color: #0f0; padding: 10px; border-radius: 4px; font-size: 12px; overflow-x: auto;">未取得</pre>
     </div>
   </div>
 
@@ -106,10 +109,18 @@
       const data = await res.json();
       if (data.id_token) {
         idToken = data.id_token;
-        document.getElementById("jwtDisplay").textContent = idToken.substring(0, 40) + "... (取得成功！)";
+        // 1. トークン全文をテキストエリアに表示（コピー可能）
+        document.getElementById("jwtDisplay").value = idToken;
+
+        // 2. JWTの真ん中（Payload部分）をBase64デコードしてJSON整形表示
+        const base64Url = idToken.split(".")[1];
+        const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+        const payloadJson = decodeURIComponent(
+          atob(base64).split("").map(c => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2)).join("")
+        );
+        document.getElementById("jwtPayload").textContent = JSON.stringify(JSON.parse(payloadJson), null, 2);
+
         alert("JWT（IDトークン）の取得に成功しました！Step BでToDoを操作できます。");
-      } else {
-        alert("トークン取得失敗: " + JSON.stringify(data));
       }
     }
 
