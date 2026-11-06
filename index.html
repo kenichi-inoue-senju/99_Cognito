@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Serverless ToDo App (新UI対応版)</title>
+  <style>
+    body { font-family: sans-serif; max-width: 640px; margin: 40px auto; padding: 0 20px; line-height: 1.6; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+    button { padding: 8px 16px; cursor: pointer; background: #0073bb; color: white; border: none; border-radius: 4px; }
+    input[type="text"] { padding: 8px; width: 70%; margin-top: 4px; }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+    .status { font-size: 0.9em; color: #555; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>📝 マイ ToDo アプリ</h1>
+
+  <!-- 設定エリア：自分のAWS環境の値を入力 -->
+  <script>
+    const CONFIG = {
+      // 1. API Gatewayの呼び出しURL (末尾スラッシュなし)
+      apiUrl: "https://b2ycat3arb.execute-api.ap-northeast-1.amazonaws.com",
+      // 2. 「ブランディング > ドメイン」にある自動生成されたCognitoドメイン (末尾スラッシュなし)
+      cognitoDomain: "https://ap-northeast-1qqwzmz1nc.auth.ap-northeast-1.amazoncognito.com",
+      // 3. 「アプリケーション > アプリケーションクライアント」にあるクライアントID
+      clientId: "2pv9cjib0n76fmcl7hcclsds9m",
+      // 4. Step 4で入力したリダイレクトURL (完全一致させてください)
+      redirectUri: "http://localhost:8000"
+    };
+  </script>
+
+  <div class="card">
+    <h3>Step A: ログインとトークン取得</h3>
+    <p>1. 下のボタンからマネージドログイン画面を開き、アカウント作成（Sign up）してサインインします。</p>
+    <button onclick="openCognitoLogin()">1. Cognito ログイン画面を開く</button>
+
+    <p style="margin-top:16px;">2. サインイン後、遷移先のURL（<code>https://example.com/?code=xxxx-xxxx...</code>）を<strong>URL丸ごとコピー</strong>して下に貼り付け、「トークンに変換」を押してください。</p>
+    <input type="text" id="codeInput" placeholder="https://example.com/?code=... をそのまま貼り付け">
+    <button onclick="exchangeCodeForToken()">2. トークンに変換</button>
+
+    <div class="status">
+      取得したIDトークン (JWT): <code id="jwtDisplay">未取得</code>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Step B: ToDoの操作</h3>
+    <div>
+      <input type="text" id="taskInput" placeholder="新しいタスクを入力">
+      <button onclick="addTodo()">追加 (POST)</button>
+    </div>
+    <p><button onclick="fetchTodos()" style="margin-top: 10px; background: #2e7d32;">一覧を再取得 (GET)</button></p>
+    <p>ログイン中のユーザーID (sub): <code id="currentUserId">未取得</code></p>
+    <ul id="todoList"></ul>
+  </div>
+
+  <script>
+    let idToken = "";
+
+    // PKCE用のランダム文字列・ハッシュ生成ヘルパー
+    function base64UrlEncode(buffer) {
+      return btoa(String.fromCharCode(...new Uint8Array(buffer)))
+        .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    }
+
+    async function openCognitoLogin() {
+      // PKCE用の code_verifier と code_challenge を生成して保存
+      const array = new Uint8Array(32);
+      crypto.getRandomValues(array);
+      const verifier = base64UrlEncode(array);
+      localStorage.setItem("pkce_verifier", verifier);
+
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+      const challenge = base64UrlEncode(digest);
+
+      const loginUrl = `${CONFIG.cognitoDomain}/oauth2/authorize?client_id=${CONFIG.clientId}&response_type=code&scope=email+openid&redirect_uri=${encodeURIComponent(CONFIG.redirectUri)}&code_challenge_method=S256&code_challenge=${challenge}`;
+      window.open(loginUrl, "_blank");
+    }
+
+    async function exchangeCodeForToken() {
+      const rawInput = document.getElementById("codeInput").value.trim();
+      if (!rawInput) return alert("ログイン後のURLまたはcodeを入力してください");
+
+      // URL丸ごと貼られても、code= の値だけ貼られても抽出できるように処理
+      let code = rawInput;
+      if (rawInput.includes("code=")) {
+        const urlParams = new URLSearchParams(rawInput.split("?")[1]);
+        code = urlParams.get("code");
+      }
+
+      const verifier = localStorage.getItem("pkce_verifier");
+      const params = new URLSearchParams({
+        grant_type: "authorization_code",
+        client_id: CONFIG.clientId,
+        code: code,
+        redirect_uri: CONFIG.redirectUri,
+        code_verifier: verifier
+      });
+
+      const res = await fetch(`${CONFIG.cognitoDomain}/oauth2/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params.toString()
+      });
+
+      const data = await res.json();
+      if (data.id_token) {
+        idToken = data.id_token;
+        document.getElementById("jwtDisplay").textContent = idToken.substring(0, 40) + "... (取得成功！)";
+        alert("JWT（IDトークン）の取得に成功しました！Step BでToDoを操作できます。");
+      } else {
+        alert("トークン取得失敗: " + JSON.stringify(data));
+      }
+    }
+
+    function getHeaders() {
+      const headers = { "Content-Type": "application/json" };
+      if (idToken) headers["Authorization"] = `Bearer ${idToken}`;
+      return headers;
+    }
+
+    async function fetchTodos() {
+      const res = await fetch(`${CONFIG.apiUrl}/todos`, { method: "GET", headers: getHeaders() });
+      if (res.status === 401) {
+        alert("401 Unauthorized: トークンが未取得か、有効期限切れです！");
+        return;
+      }
+      const data = await res.json();
+      document.getElementById("currentUserId").textContent = data.userId;
+      const list = document.getElementById("todoList");
+      list.innerHTML = "";
+      (data.todos || []).forEach(item => {
+        const li = document.createElement("li");
+        li.textContent = `${item.task} (${new Date(item.createdAt).toLocaleTimeString()})`;
+        list.appendChild(li);
+      });
+    }
+
+    async function addTodo() {
+      const task = document.getElementById("taskInput").value.trim();
+      if (!task) return;
+      const res = await fetch(`${CONFIG.apiUrl}/todos`, {
+        method: "POST",
+        headers: getHeaders(),
+        body: JSON.stringify({ task })
+      });
+      if (res.status === 401) {
+        alert("401 Unauthorized: 先にStep Aでトークンを取得してください！");
+        return;
+      }
+      document.getElementById("taskInput").value = "";
+      await fetchTodos();
+    }
+  </script>
+</body>
+</html>
